@@ -5,28 +5,42 @@
 #include <windows.h>
 #include "AutoCarStruct.h"
 
+using namespace cv;
+using namespace std;
+
+#define ENABLE 0 
+#define DISABLE -1
+
 #define DEBUG 1
-#define DEBUG_WITHOUT_PORT 0
 #define RUNING -1
-#define RUN_STATUS DEBUG_WITHOUT_PORT
+#define RUN_STATUS DEBUG
+
+
+#if RUN_STATUS==DEBUG
+#define SERIAL_PORT DISABLE
+#define FRAME_TEST DISABLE
+#else
+#define SERIAL_PORT ENABLE
+#define FRAME_TEST DISABLE
+#endif
 
 #define GROUND_RED 0 
 #define GROUND_BLUE 1
-#define GROUND_DEFAULT GROUND_BLUE
+#define GROUND_DEFAULT GROUND_RED
 
 #define VIDEO 0
-#define CAMERA 1
+#define CAMERA 1//Note:remember to check the number of device
 #define PICTURE 2
-#define IMG_SOURCE VIDEO
+#define IMG_SOURCE CAMERA
+
 
 #define DELAY_TIME 5000
 
 #define NCOM "COM3"
 
-using namespace cv;
-using namespace std;
 
 
+int displayNum=0;
 int ground = 0;
 int isShowDebug = 1;
 int isUartOpen = 1;
@@ -34,7 +48,7 @@ int isUartOpen = 1;
 //CvRect bounding[3];
 DetectObject candidateObj[3];
 const char *srcPath = "6.jpg";
-const char *videoPath="2.flv";
+const char *videoPath="v1.wmv";//"1.wmv";
 
 //Declare
 int Configure(void);
@@ -42,6 +56,9 @@ int Detect_enemy(void);
 void ConnectedComponents(IplImage *mask, int poly1_hull0, float perimScale, int number,DetectObject candidateObj[]);
 IplImage* doPyrDown(IplImage* in);
 int ChooseTarget(DetectObject candidateObj[],DetectObject* detectResult,CvPoint* target);
+int ChooseTargetR(DetectObject candidateObj[],DetectObject* detectResult,CvPoint* target);
+void imshowN(const char *name,Mat src);
+void drawRotateRect(Mat src,RotatedRect rRect,Scalar color);
 
 #pragma region Calibrate parameter
 ////Calibrate parameter
@@ -80,10 +97,12 @@ int main()
 	unsigned char send_buff[10];
 	double time_cnt = 0;
 	int time_ms = 0;
+	
+
 	CvPoint target = cvPoint(0, 0);
 
-	cvNamedWindow("Source", 1);
-	cvMoveWindow("Source", 480, 0);
+	//cvNamedWindow("Source", 1);
+	//cvMoveWindow("Source", 480, 0);
 
 
 	//Choose the image source
@@ -107,7 +126,7 @@ int main()
 	
 
     //Open and the uart and read the ground type 
-	if(RUN_STATUS!=DEBUG_WITHOUT_PORT)
+	if(SERIAL_PORT==ENABLE)
 	{
 		if (isUartOpen)
 		{
@@ -120,13 +139,30 @@ int main()
 	//Main recognition
 	while (true)
 	{
+		//Reset the display win number
+		displayNum=-1;
+
+
+		
+
 		//Start to count
 		time_cnt = (double)cvGetTickCount();
 		
 		if(IMG_SOURCE==CAMERA||IMG_SOURCE==VIDEO)
+		{
 			src = cvQueryFrame(capture);
+			src = cvQueryFrame(capture);
+		}
 		else if(IMG_SOURCE==PICTURE)
 			src = cvLoadImage(srcPath, CV_LOAD_IMAGE_UNCHANGED);  
+
+		if(src==NULL)
+		{
+			waitKey(0);
+			exit(0);
+		}
+
+		imshowN("Srouce",Mat(src));
 
 		Detect_enemy();
 
@@ -134,25 +170,41 @@ int main()
 
 		
 
-		cvNamedWindow("Sel",1);
-		cvShowImage("Sel",sel_image);
-
+		
 
 		DetectObject* targetObj=new DetectObject;
-		ChooseTarget(candidateObj,targetObj,&target);
+		ChooseTargetR(candidateObj,targetObj,&target);
 		
+		//Check whether some valid object is detected
 		if(target.x!=0||target.y!=0)
 		{
+			for(int i=0;i<=2;i++)
+			{
+				if(candidateObj[i].isObject!=-1)
+				{
+					//Draw the candidate reactangle with pig
+					cvRectangle(src, cvPoint(candidateObj[i].bounding.x, candidateObj[i].bounding.y), cvPoint(candidateObj[i].bounding.x + candidateObj[i].bounding.width, candidateObj[i].bounding.y + candidateObj[i].bounding.height), cvScalar(0, 100, 0),4);
+					//Draw the supposed object with pig
+					drawRotateRect(src,candidateObj[i].boundingR,Scalar(100,0,0));
+				}
+			}
+
 			cvCircle(src,targetObj->center,8,cvScalar(0,255,0),-1);
-			cvRectangle(src, cvPoint(candidateObj[0].bounding.x, candidateObj[0].bounding.y), cvPoint(candidateObj[0].bounding.x + candidateObj[0].bounding.width, candidateObj[0].bounding.y + candidateObj[0].bounding.height), cvScalar(0, 255, 0),4);
-			cvRectangle(src, cvPoint(candidateObj[1].bounding.x, candidateObj[1].bounding.y), cvPoint(candidateObj[1].bounding.x + candidateObj[1].bounding.width, candidateObj[1].bounding.y + candidateObj[1].bounding.height), cvScalar(0, 255, 0),4);
-			cvRectangle(src, cvPoint(candidateObj[2].bounding.x, candidateObj[2].bounding.y), cvPoint(candidateObj[2].bounding.x + candidateObj[2].bounding.width, candidateObj[2].bounding.y + candidateObj[2].bounding.height), cvScalar(0, 255, 0),4);
+			cvCircle(src,targetObj->boundingR.center,8,cvScalar(255,0,0),-1);
+
+			cvRectangle(src, cvPoint(targetObj->bounding.x, targetObj->bounding.y), cvPoint(targetObj->bounding.x + targetObj->bounding.width, targetObj->bounding.y + targetObj->bounding.height), cvScalar(0, 255, 0),4);
+			drawRotateRect(src,targetObj->boundingR,Scalar(255,0,0));
 		}
 		
-		cvShowImage("Source", src);
-		
-		
 
+		
+		imshowN("Source", Mat(src));
+
+		
+		
+		
+		
+		
 
 		//Package the data
 		send_buff[0] = 0xf2;
@@ -160,7 +212,7 @@ int main()
 		send_buff[2] = (unsigned char) (target.y/4);//0-120
 
 		//Send coordinate to car
-		if(RUN_STATUS!=DEBUG_WITHOUT_PORT)
+		if(SERIAL_PORT==ENABLE)
 		{
 			if (isUartOpen)
 			{
@@ -180,7 +232,16 @@ int main()
 		else
 			printf("     运行时间40ms\n");
 
-		key=cvWaitKey(30);
+
+		//Delay for supervisor or pass when runing
+		if(FRAME_TEST==DISABLE)
+		{
+			key=cvWaitKey(1);
+		}
+		else
+		{
+			key=cvWaitKey(-1);
+		}
 		//click q to quit
 		if (key == 'q')
 		{
@@ -240,6 +301,55 @@ int ChooseTarget(DetectObject candidateObj[],DetectObject* detectResult,CvPoint*
 
 
 
+
+
+
+
+//Choose the best target from candidateR(acroding the area)
+int ChooseTargetR(DetectObject candidateObj[],DetectObject* detectResult,CvPoint* target)
+{
+	if (candidateObj[0].center.x == 0 && candidateObj[0].center.y == 0 && candidateObj[1].center.x == 0 && candidateObj[1].center.y == 0
+			&& candidateObj[2].center.x == 0 && candidateObj[2].center.y == 0)
+		{
+			target->x = 0;
+			target->y = 0;
+			
+			
+		}
+	else if (candidateObj[0].boundingR.size.height * candidateObj[0].boundingR.size.width > candidateObj[1].boundingR.size.height * candidateObj[1].boundingR.size.width)
+		{
+			if (candidateObj[0].boundingR.size.height * candidateObj[0].boundingR.size.width > candidateObj[2].boundingR.size.height * candidateObj[2].boundingR.size.width)
+			{
+			target->x = candidateObj[0].center.x;
+			target->y = candidateObj[0].center.y;
+			*detectResult=candidateObj[0];
+			}
+			else
+			{
+				target->x = candidateObj[2].center.x;
+				target->y = candidateObj[2].center.y;
+				*detectResult=candidateObj[2];
+			}
+		}
+		else
+		{
+			if (candidateObj[1].boundingR.size.height * candidateObj[1].boundingR.size.width > candidateObj[2].boundingR.size.height * candidateObj[2].boundingR.size.width)
+			{
+				target->x = candidateObj[1].center.x;
+				target->y = candidateObj[1].center.y;
+				*detectResult=candidateObj[1];
+			}
+			else
+			{
+				target->x = candidateObj[2].center.x;
+				target->y = candidateObj[2].center.y;
+				*detectResult=candidateObj[2];
+			}
+		}
+
+	return 0;
+
+}
 
 int Configure(void)
 {
@@ -370,6 +480,10 @@ int Detect_enemy(void)
 		cvSplit(ano_color_ima, 0, sel_channel, 0, 0);
 	}
 
+	imshowN("YCrCb",Mat(sel_channel));
+	
+
+	
 	//HSV
 	//cvCvtColor(src, color_type, CV_BGR2HSV);
 	//cvSplit(color_type, 0, 0, sel_channel, 0);
@@ -377,21 +491,26 @@ int Detect_enemy(void)
 	//Binarization
 	cvThreshold(sel_channel, sel_image, 180, 255.0, CV_THRESH_BINARY);
 
+	imshowN("YrCb_Binarization",Mat(sel_image));
+
 	//Interval Binarization
 	//cvThreshold(sel_channel, tran_image, 100, 0, CV_THRESH_TOZERO);
 	//cvThreshold(tran_image, sel_image, 150, 0, CV_THRESH_TOZERO_INV);
 	//cvThreshold(sel_channel, sel_image, 100, 255.0, CV_THRESH_BINARY);
 
 
-	////Clear the last result
+	//Clear the last result
 	 memset(candidateObj, 0, sizeof(candidateObj));
 	 //memset(bounding, 0, sizeof(bounding));
 	 
 	
 	//Connection analysis,3 objects at most，poly fitter
-	ConnectedComponents(sel_image, 1, 16, 3,candidateObj); 
+	ConnectedComponents(sel_image, 1, 16, 3,candidateObj); //Source bin image,Flag of method to approximate,Reference of scale of image size,Number of object to detect,Output
 
-	//object verified
+	
+
+
+	//Filter to remove the cyclinder
 	for (int i = 0; i < 3; i++)
 	{
 		if (1.2f*candidateObj[i].bounding.height >= candidateObj[i].bounding.width)
@@ -400,6 +519,14 @@ int Detect_enemy(void)
 			candidateObj[i].bounding.width = 0;
 			candidateObj[i].center.x = 0;
 			candidateObj[i].center.y = 0;
+			candidateObj[i].isObject=-1;
+			candidateObj[i].boundingR.size.height=0;
+			candidateObj[i].boundingR.size.width=0;
+			
+		}
+		else
+		{
+			candidateObj[i].isObject=0;
 		}
 	}
 
@@ -422,35 +549,46 @@ void ConnectedComponents(IplImage *mask, int poly1_hull0, float perimScale, int 
 {
 	/*下面4句代码是为了兼容原函数接口，即内部使用的是c风格，但是其接口是c++风格的*/
 	int *num = &number;
-	static CvMemStorage*    mem_storage = NULL;
-	static CvSeq*            contours = NULL;
+	static CvMemStorage* mem_storage = NULL;
+	static CvSeq* contours = NULL;
 	//CLEAN UP RAW MASK
 	//Morphology Open
 	cvMorphologyEx(mask, mask, NULL, NULL, CV_MOP_OPEN, 1);//对输入mask进行开操作，CVCLOSE_ITR为开操作的次数，输出为mask图像
+	
+	//imshowN("Open operation",Mat(mask));
 	//Morphology Close
 	cvMorphologyEx(mask, mask, NULL, NULL, CV_MOP_CLOSE, 1);//对输入mask进行闭操作，CVCLOSE_ITR为闭操作的次数，输出为mask图像
-	
-	//FIND CONTOURS AROUND ONLY BIGGER REGIONS
-	if (mem_storage == NULL) mem_storage = cvCreateMemStorage(0);
-	else cvClearMemStorage(mem_storage);
+	//imshowN("Close operation",Mat(mask));
 
+	//FIND CONTOURS AROUND ONLY BIGGER REGIONS
+	if (mem_storage == NULL) 
+		mem_storage = cvCreateMemStorage(0);
+	else 
+		cvClearMemStorage(mem_storage);
+	
+	imshowN("Morphology Operation",Mat(mask));
+	
 	//CV_RETR_EXTERNAL=0是在types_c.h中定义的，CV_CHAIN_APPROX_SIMPLE=2也是在该文件中定义的
-	CvContourScanner scanner = cvStartFindContours(mask, mem_storage, sizeof(CvContour), CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
+	CvContourScanner scanner = cvStartFindContours(mask, mem_storage, sizeof(CvContour), CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);//Find the external contour
+	//Here mask will be erased
+	
+	
 	CvSeq* c;
-	int numCont = 0;
-	//该while内部只针对比较大的轮廓曲线进行替换处理
+	int numCont = 0;	
+
+	//Substitue the big contour and delete the small ones
 	while ((c = cvFindNextContour(scanner)) != NULL)
 	{
-		double len = cvContourPerimeter(c);
+		double len = cvContourPerimeter(c);//calculate perimeter
 		double q = (mask->height + mask->width) / perimScale;   //calculate perimeter len threshold
-		if (len < q) //Get rid of blob if it's perimeter is too small
+		if (len < q/4) //Get rid of blob(small object) if it's perimeter is too small
 		{
-			cvSubstituteContour(scanner, NULL);    //用NULL代替原来的那个轮廓
+			cvSubstituteContour(scanner, NULL);    //Substitute the uneligible
 		}
 		else //Smooth it's edges if it's large enough
 		{
 			CvSeq* c_new;
-			if (poly1_hull0) //Polygonal approximation of the segmentation
+			if (poly1_hull0) //Polygonal approximation of the segmentation,poly1_hull0 is a flag
 				c_new = cvApproxPoly(c, sizeof(CvContour), mem_storage, CV_POLY_APPROX_DP, 2, 0);
 			else //Convex Hull of the segmentation
 				c_new = cvConvexHull2(c, mem_storage, CV_CLOCKWISE, 1);
@@ -460,11 +598,12 @@ void ConnectedComponents(IplImage *mask, int poly1_hull0, float perimScale, int 
 	}
 
 	contours = cvEndFindContours(&scanner);    //结束轮廓查找操作
+
 	// PAINT THE FOUND REGIONS BACK INTO THE IMAGE
 	cvZero(mask);
 	IplImage *maskTemp;
 
-	//CALC CENTER OF MASS AND OR BOUNDING RECTANGLES
+	//Calculate the center of mass and bounding of surranding rectangle
 	if (*num != 0)
 	{
 		int N = *num, numFilled = 0, i = 0;
@@ -476,11 +615,12 @@ void ConnectedComponents(IplImage *mask, int poly1_hull0, float perimScale, int 
 			if (i < N) //Only process up to *num of them
 			{
 				//CV_CVX_WHITE在本程序中是白色的意思
+				//maskTemp is to be the input of moment calculate,which just contain one contour
 				cvDrawContours(maskTemp, c, CV_CVX_WHITE, CV_CVX_WHITE, -1, CV_FILLED, 8);
 				//Find the center of each contour
 				if (1/*centers != &cvPoint(-1, -1)*/)
 				{
-					cvMoments(maskTemp, &moments, 1);    //计算mask图像的最高达3阶的矩
+					cvMoments(maskTemp, &moments, 1);    //Calculate the moment,Moments moments( const CvArr* arr, CvMoments* moments, int binary=0 )
 					M00 = cvGetSpatialMoment(&moments, 0, 0); //提取x的0次和y的0次矩
 					M10 = cvGetSpatialMoment(&moments, 1, 0); //提取x的1次和y的0次矩
 					M01 = cvGetSpatialMoment(&moments, 0, 1); //提取x的0次和y的1次矩
@@ -490,24 +630,60 @@ void ConnectedComponents(IplImage *mask, int poly1_hull0, float perimScale, int 
 				}
 				//Bounding rectangles around blobs
 
-				candidateObj[i].bounding = cvBoundingRect(c); //算出轮廓c的外接矩形
+				candidateObj[i].bounding = cvBoundingRect(c); //Calcuate the rect of the contour
+				CvBox2D bounding1=cvMinAreaRect2(c);
+				candidateObj[i].boundingR=RotatedRect(bounding1);
+
 
 				cvZero(maskTemp);
 				numFilled++;
 			}
+
 			//Draw filled contours into mask
-			cvDrawContours(mask, c, CV_CVX_WHITE, CV_CVX_WHITE, -1, CV_FILLED, 8); //draw to central mask
+			cvDrawContours(mask, c, CV_CVX_WHITE, CV_CVX_WHITE, 1, 2, 8); //draw to central mask
+			
+
 		} //end looping over contours
 		*num = numFilled;
 		cvReleaseImage(&maskTemp);
 	}
-	//ELSE JUST DRAW PROCESSED CONTOURS INTO THE MASK
+	//If no object is required,just draw the contour
 	else
 	{
 		for (c = contours; c != NULL; c = c->h_next)
 		{
-			cvDrawContours(mask, c, CV_CVX_WHITE, CV_CVX_BLACK, -1, CV_FILLED, 8);
+			cvDrawContours(mask, c, CV_CVX_WHITE, CV_CVX_BLACK,1, 2, 8);
 		}
 	}
+
+	imshowN("ConnectedComponents",Mat(sel_image));
+
 }
 
+void imshowN(const char *name,Mat src)
+{
+	static int row=0;
+	static int colum=0;
+	const int wNum=3;
+	char displayStr[30];
+	
+	displayNum++;
+	row=displayNum/wNum;
+	colum=displayNum%wNum;
+
+	
+	sprintf(displayStr,"%d:%s",displayNum,name);
+	imshow(displayStr,src);
+	moveWindow(displayStr,colum*500,row*400);
+}
+
+void drawRotateRect(Mat src,RotatedRect rRect,Scalar color)
+{
+	Point2f vertices[4];
+	rRect.points(vertices);
+
+	for (int i = 0; i < 4; i++)
+		line(src, vertices[i], vertices[(i+1)%4], color,7);
+
+
+}
